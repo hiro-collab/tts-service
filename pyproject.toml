@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tts-service"
+version = "0.1.0"
+description = "Local text-to-speech service module for Dify and general TTS workflows"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+tts-speak = "tts_service.apps.speak_text:main"
+tts-watch-sword = "tts_service.apps.watch_sword_response:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tts_service*"]
