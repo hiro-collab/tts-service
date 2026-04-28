@@ -63,6 +63,12 @@ python -m tts_service.apps.speak_text --text "こんにちは"
 python -m tts_service.apps.speak_text --text "こんにちは" --player file --output-audio-dir .cache/tts_service/out
 ```
 
+合成も再生もせず、状態遷移だけを確認する場合:
+
+```powershell
+python -m tts_service.apps.speak_text --text "こんにちは" --engine noop --player noop
+```
+
 Windows SAPI の音声、速度、音量を指定する場合:
 
 ```powershell
@@ -73,6 +79,20 @@ python -m tts_service.apps.speak_text --text "こんにちは" --voice-name "Mic
 
 Windows SAPI が「音声がインストールされていない」系のエラーを返す場合は、現在のユーザーで利用可能な Windows 音声をインストールしてから再実行してください。MVP では、空の WAV ファイルを成功扱いせずエラーにします。
 
+利用可能な Windows SAPI 音声を確認する場合:
+
+```powershell
+python -m tts_service.apps.list_voices
+python -m tts_service.apps.list_voices --json
+```
+
+watcher 側からも確認できます。
+
+```powershell
+python -m tts_service.apps.watch_sword_response --list-voices
+python -m tts_service.apps.watch_sword_response --list-voices --json
+```
+
 ## sword-voice-agent の応答を監視する
 
 ```powershell
@@ -82,6 +102,35 @@ python -m tts_service.apps.watch_sword_response `
 ```
 
 watcher は、明示指定された `--status-dir` の `latest_dify_response.json` だけを読みます。広範囲のディレクトリを勝手にスキャンしません。
+起動時には、監視対象ファイル、出力 status dir、TTS engine、player、voice name、poll interval を標準出力に表示します。
+
+起動前に設定とパスだけ確認する場合:
+
+```powershell
+python -m tts_service.apps.watch_sword_response `
+  --status-dir <sword_voice_agent_root>\.cache\sword_voice_agent `
+  --output-status-dir .cache\tts_service `
+  --dry-run
+```
+
+統合側から JSON でヘルスチェックする場合:
+
+```powershell
+python -m tts_service.apps.watch_sword_response `
+  --status-dir <sword_voice_agent_root>\.cache\sword_voice_agent `
+  --output-status-dir .cache\tts_service `
+  --health-json
+```
+
+音声エンジンに依存せず、ファイル監視、重複防止、状態出力だけ確認する場合:
+
+```powershell
+python -m tts_service.apps.watch_sword_response `
+  --status-dir <sword_voice_agent_root>\.cache\sword_voice_agent `
+  --output-status-dir .cache\tts_service `
+  --engine noop `
+  --player noop
+```
 
 想定する payload 例:
 
@@ -94,6 +143,30 @@ watcher は、明示指定された `--status-dir` の `latest_dify_response.jso
 ```
 
 `{"payload": {"answer": "..."}}` や `{"response": {"answer": "..."}}` のようなネスト形式も受け付けます。
+
+`sword-voice-agent` の handoff payload では、読み上げ本文は `response.text`、`message_id` は `response.message_id`、`conversation_id` は `response.conversation_id` から取得します。`turn_id` は top-level または `request.context.turn_id` から取得し、status に出します。
+
+```json
+{
+  "type": "dify_handoff_result",
+  "request": {
+    "text": "今日はいい天気ですね",
+    "context": {
+      "turn_id": "turn-1"
+    }
+  },
+  "response": {
+    "type": "agent_response",
+    "text": "はい、今日はいい天気ですね。",
+    "conversation_id": "conv-1",
+    "message_id": "msg-1"
+  },
+  "skipped": false,
+  "turn_id": "turn-1"
+}
+```
+
+`skipped: true` の payload は読み上げ対象外です。
 
 ## 重複防止
 
@@ -129,6 +202,24 @@ Dify 応答本文そのものは、重複防止ファイルには書きません
 - `error`: 合成または再生に失敗
 
 状態 JSON には ID、source、本文ハッシュ、エラー内容を書きます。Dify 応答本文や API キーは意図的に含めません。
+watcher 起動中は `service: "running"`、Ctrl+C 終了時は `service: "stopped"` を書きます。watcher 由来の状態には `watching`、`engine`、`player`、`voice_name`、`poll_interval` も含まれます。
+
+例:
+
+```json
+{
+  "phase": "speaking",
+  "service": "running",
+  "request_id": "...",
+  "message_id": "msg-1",
+  "conversation_id": "conv-1",
+  "turn_id": "turn-1",
+  "source": "sword_status_store",
+  "watching": ".cache/sword_voice_agent/latest_dify_response.json",
+  "engine": "windows-sapi",
+  "player": "speaker"
+}
+```
 
 ## 再生キュー方針
 

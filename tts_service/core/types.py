@@ -80,16 +80,39 @@ class TtsResult:
 class TtsState:
     phase: TtsPhase
     updated_at: str = field(default_factory=utc_now_iso)
+    service: str | None = None
     request_id: str | None = None
     message_id: str | None = None
     conversation_id: str | None = None
+    turn_id: str | None = None
     source: str | None = None
+    watching: str | None = None
+    engine: str | None = None
+    player: str | None = None
+    voice_name: str | None = None
+    poll_interval: float | None = None
     text_hash: str | None = None
     error: str | None = None
 
     @classmethod
-    def idle(cls) -> "TtsState":
-        return cls(phase=TtsPhase.IDLE)
+    def idle(
+        cls,
+        service: str | None = None,
+        watching: str | None = None,
+        engine: str | None = None,
+        player: str | None = None,
+        voice_name: str | None = None,
+        poll_interval: float | None = None,
+    ) -> "TtsState":
+        return cls(
+            phase=TtsPhase.IDLE,
+            service=service,
+            watching=watching,
+            engine=engine,
+            player=player,
+            voice_name=voice_name,
+            poll_interval=poll_interval,
+        )
 
     @classmethod
     def from_request(
@@ -103,19 +126,61 @@ class TtsState:
             request_id=request.request_id,
             message_id=request.message_id,
             conversation_id=request.conversation_id,
+            turn_id=_string_metadata(request.metadata, "turn_id"),
             source=request.source,
             text_hash=request.text_hash,
             error=error,
+        )
+
+    def with_context(
+        self,
+        service: str | None = None,
+        watching: str | None = None,
+        engine: str | None = None,
+        player: str | None = None,
+        voice_name: str | None = None,
+        poll_interval: float | None = None,
+    ) -> "TtsState":
+        return TtsState(
+            phase=self.phase,
+            updated_at=self.updated_at,
+            service=service if service is not None else self.service,
+            request_id=self.request_id,
+            message_id=self.message_id,
+            conversation_id=self.conversation_id,
+            turn_id=self.turn_id,
+            source=self.source,
+            watching=watching if watching is not None else self.watching,
+            engine=engine if engine is not None else self.engine,
+            player=player if player is not None else self.player,
+            voice_name=voice_name if voice_name is not None else self.voice_name,
+            poll_interval=poll_interval if poll_interval is not None else self.poll_interval,
+            text_hash=self.text_hash,
+            error=self.error,
         )
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
             "phase": self.phase.value,
             "updated_at": self.updated_at,
+            "service": self.service,
             "request_id": self.request_id,
             "message_id": self.message_id,
             "conversation_id": self.conversation_id,
+            "turn_id": self.turn_id,
             "source": self.source,
+            "watching": self.watching,
+            "engine": self.engine,
+            "player": self.player,
+            "voice_name": self.voice_name,
+            "poll_interval": self.poll_interval,
             "text_hash": self.text_hash,
             "error": self.error,
         }
+
+
+def _string_metadata(metadata: Mapping[str, Any], key: str) -> str | None:
+    value = metadata.get(key)
+    if isinstance(value, str) and value.strip():
+        return value
+    return None

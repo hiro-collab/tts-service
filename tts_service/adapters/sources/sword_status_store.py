@@ -15,6 +15,7 @@ TEXT_PATHS = (
     ("response", "answer"),
     ("response", "text"),
     ("response", "content"),
+    ("request", "text"),
     ("data", "answer"),
     ("data", "text"),
     ("dify_response", "answer"),
@@ -39,6 +40,15 @@ CONVERSATION_ID_PATHS = (
     ("data", "conversation_id"),
     ("dify_response", "conversation_id"),
     ("payload", "conversation_id"),
+)
+
+TURN_ID_PATHS = (
+    ("turn_id",),
+    ("request", "context", "turn_id"),
+    ("request", "turn_id"),
+    ("response", "turn_id"),
+    ("data", "turn_id"),
+    ("payload", "turn_id"),
 )
 
 
@@ -77,17 +87,23 @@ class SwordStatusStoreSource:
 
 
 def request_from_sword_payload(payload: Any) -> TtsRequest | None:
+    if isinstance(payload, dict) and payload.get("skipped") is True:
+        return None
+
     text = _find_string(payload, TEXT_PATHS, recursive_keys=("answer", "text", "content"))
     if text is None or not text.strip():
         return None
 
     message_id = _find_string(payload, MESSAGE_ID_PATHS)
     conversation_id = _find_string(payload, CONVERSATION_ID_PATHS)
+    turn_id = _find_string(payload, TURN_ID_PATHS)
+    metadata = {"turn_id": turn_id} if turn_id else {}
     return TtsRequest(
         text=text,
         message_id=message_id,
         conversation_id=conversation_id,
         source="sword_status_store",
+        metadata=metadata,
     )
 
 

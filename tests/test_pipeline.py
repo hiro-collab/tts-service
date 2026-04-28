@@ -58,6 +58,33 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(synth.calls, 1)
             self.assertEqual(player.calls, 1)
 
+    def test_pipeline_adds_state_context_and_turn_id(self) -> None:
+        with workspace_temp_dir() as temp_dir:
+            synth = FakeSynthesizer(Path(temp_dir) / "audio.wav")
+            player = FakePlayer()
+            status = FakeStatusSink()
+            pipeline = TtsPipeline(
+                synth,
+                player,
+                status_sink=status,
+                state_context={
+                    "service": "running",
+                    "watching": "C:/status/latest_dify_response.json",
+                    "engine": "noop",
+                    "player": "noop",
+                    "poll_interval": 1.0,
+                },
+            )
+            request = TtsRequest(text="hello", metadata={"turn_id": "turn-1"})
+
+            pipeline.speak(request)
+
+            self.assertEqual(status.states[-1].service, "running")
+            self.assertEqual(status.states[-1].watching, "C:/status/latest_dify_response.json")
+            self.assertEqual(status.states[-1].engine, "noop")
+            self.assertEqual(status.states[-1].player, "noop")
+            self.assertEqual(status.states[-1].turn_id, "turn-1")
+
     def test_duplicate_request_is_skipped(self) -> None:
         with workspace_temp_dir() as temp_dir:
             request = TtsRequest(text="hello", message_id="msg-1")

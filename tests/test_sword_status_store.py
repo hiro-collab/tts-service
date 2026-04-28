@@ -43,6 +43,49 @@ class SwordStatusStoreTests(unittest.TestCase):
         self.assertEqual(request.text, "nested answer")
         self.assertEqual(request.message_id, "msg-2")
 
+    def test_extracts_sword_voice_agent_handoff_payload(self) -> None:
+        request = request_from_sword_payload(
+            {
+                "type": "dify_handoff_result",
+                "request": {
+                    "text": "今日はいい天気ですね",
+                    "context": {
+                        "turn_id": "turn-1",
+                    },
+                },
+                "response": {
+                    "type": "agent_response",
+                    "text": "はい、今日はいい天気ですね。",
+                    "conversation_id": "conv-1",
+                    "message_id": "msg-1",
+                },
+                "skipped": False,
+                "turn_id": "turn-1",
+            }
+        )
+
+        self.assertIsNotNone(request)
+        assert request is not None
+        self.assertEqual(request.text, "はい、今日はいい天気ですね。")
+        self.assertEqual(request.message_id, "msg-1")
+        self.assertEqual(request.conversation_id, "conv-1")
+        self.assertEqual(request.metadata["turn_id"], "turn-1")
+
+    def test_skipped_payload_is_not_read_aloud(self) -> None:
+        request = request_from_sword_payload(
+            {
+                "response": {
+                    "text": "do not speak",
+                    "conversation_id": "conv-1",
+                    "message_id": "msg-1",
+                },
+                "skipped": True,
+                "turn_id": "turn-1",
+            }
+        )
+
+        self.assertIsNone(request)
+
     def test_source_yields_only_after_file_change(self) -> None:
         with workspace_temp_dir() as temp_dir:
             status_dir = Path(temp_dir)
