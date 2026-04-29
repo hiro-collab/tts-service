@@ -75,6 +75,32 @@ Windows SAPI の音声、速度、音量を指定する場合:
 python -m tts_service.apps.speak_text --text "こんにちは" --voice-name "Microsoft Haruka Desktop" --rate 0 --volume 100
 ```
 
+`--volume` は Windows SAPI に渡す合成側の音量です。OS のシステム音量とは別に、tts_service 側だけのアプリ音量を掛ける場合は `--app-volume` を使います。値は `0.0` から `1.0` です。
+
+```powershell
+python -m tts_service.apps.speak_text --text "こんにちは" --app-volume 0.5
+```
+
+watcher 起動中に利用システム側から音量を変えたい場合は、`app_volume.json` を更新します。既定の場所は `--output-status-dir` 配下です。
+
+```powershell
+python -m tts_service.apps.set_volume 0.35 --output-status-dir .cache\tts_service
+```
+
+`set_volume` は既定で短い確認音を鳴らします。実際の TTS と同じ app volume ゲインを通すので、変更後のおおよその音量を確認できます。自動テストや無音で更新したい場合は `--no-preview` を付けます。
+
+```powershell
+python -m tts_service.apps.set_volume 0.35 --output-status-dir .cache\tts_service --no-preview
+```
+
+直接書く場合は次の形式です。
+
+```json
+{
+  "app_volume": 0.35
+}
+```
+
 日本語が不自然に読まれる場合は、まず日本語音声を明示してください。既定音声が英語の場合、`こんにちは` のような日本語テキストは英語音声の発音規則で読まれてしまいます。
 
 Windows SAPI が「音声がインストールされていない」系のエラーを返す場合は、現在のユーザーで利用可能な Windows 音声をインストールしてから再実行してください。MVP では、空の WAV ファイルを成功扱いせずエラーにします。
@@ -103,7 +129,7 @@ python -m tts_service.apps.watch_sword_response `
 ```
 
 watcher は、明示指定された `--status-dir` の `latest_dify_response.json` だけを読みます。広範囲のディレクトリを勝手にスキャンしません。
-起動時には、監視対象ファイル、出力 status dir、TTS engine、player、voice name、poll interval を標準出力に表示します。
+起動時には、監視対象、出力 status dir、TTS engine、player、voice name、app volume、poll interval を標準出力に表示します。
 
 起動前に設定とパスだけ確認する場合:
 
@@ -129,6 +155,7 @@ python -m tts_service.apps.watch_sword_response `
 python -m tts_service.apps.watch_sword_response `
   --status-dir <sword_voice_agent_root>\.cache\sword_voice_agent `
   --output-status-dir .cache\tts_service `
+  --app-volume 0.7 `
   --engine noop `
   --player noop
 ```
@@ -243,7 +270,7 @@ Dify 応答本文そのものは、重複防止ファイルには書きません
 - `error`: 合成または再生に失敗
 
 状態 JSON には ID、source、本文ハッシュ、エラー内容を書きます。Dify 応答本文や API キーは意図的に含めません。
-watcher 起動中は `service: "running"`、Ctrl+C 終了時は `service: "stopped"` を書きます。watcher 由来の状態には `watching`、`engine`、`player`、`voice_name`、`poll_interval` も含まれます。
+watcher 起動中は `service: "running"`、Ctrl+C 終了時は `service: "stopped"` を書きます。watcher 由来の状態には `watching`、`engine`、`player`、`voice_name`、`poll_interval`、`app_volume`、`app_volume_file` も含まれます。
 
 `events.jsonl` には状態遷移に加えて、低遅延化の比較用に次の計測イベントを書きます。各イベントは `wall_time` と `monotonic_time` / `perf_counter`、`turn_id`、`request_id`、`message_id`、`conversation_id`、`source`、本文の `text_hash` を持ち、本文そのものは書きません。
 
@@ -266,7 +293,9 @@ watcher 起動中は `service: "running"`、Ctrl+C 終了時は `service: "stopp
   "source": "sword_status_store",
   "watching": ".cache/sword_voice_agent/latest_dify_response.json",
   "engine": "windows-sapi",
-  "player": "speaker"
+  "player": "speaker",
+  "app_volume": 0.7,
+  "app_volume_file": ".cache/tts_service/app_volume.json"
 }
 ```
 

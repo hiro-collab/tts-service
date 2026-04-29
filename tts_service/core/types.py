@@ -124,6 +124,8 @@ class TtsEvent:
         player: str | None = None,
         voice_name: str | None = None,
         poll_interval: float | None = None,
+        app_volume: float | None = None,
+        app_volume_file: str | None = None,
     ) -> "TtsEvent":
         metadata = dict(self.metadata)
         for key, value in {
@@ -133,6 +135,8 @@ class TtsEvent:
             "player": player,
             "voice_name": voice_name,
             "poll_interval": poll_interval,
+            "app_volume": app_volume,
+            "app_volume_file": app_volume_file,
         }.items():
             if value is not None:
                 metadata[key] = value
@@ -184,6 +188,8 @@ class TtsState:
     player: str | None = None
     voice_name: str | None = None
     poll_interval: float | None = None
+    app_volume: float | None = None
+    app_volume_file: str | None = None
     text_hash: str | None = None
     error: str | None = None
 
@@ -196,6 +202,8 @@ class TtsState:
         player: str | None = None,
         voice_name: str | None = None,
         poll_interval: float | None = None,
+        app_volume: float | None = None,
+        app_volume_file: str | None = None,
     ) -> "TtsState":
         return cls(
             phase=TtsPhase.IDLE,
@@ -205,6 +213,8 @@ class TtsState:
             player=player,
             voice_name=voice_name,
             poll_interval=poll_interval,
+            app_volume=app_volume,
+            app_volume_file=app_volume_file,
         )
 
     @classmethod
@@ -233,6 +243,8 @@ class TtsState:
         player: str | None = None,
         voice_name: str | None = None,
         poll_interval: float | None = None,
+        app_volume: float | None = None,
+        app_volume_file: str | None = None,
     ) -> "TtsState":
         return TtsState(
             phase=self.phase,
@@ -248,6 +260,8 @@ class TtsState:
             player=player if player is not None else self.player,
             voice_name=voice_name if voice_name is not None else self.voice_name,
             poll_interval=poll_interval if poll_interval is not None else self.poll_interval,
+            app_volume=app_volume if app_volume is not None else self.app_volume,
+            app_volume_file=app_volume_file if app_volume_file is not None else self.app_volume_file,
             text_hash=self.text_hash,
             error=self.error,
         )
@@ -267,6 +281,8 @@ class TtsState:
             "player": self.player,
             "voice_name": self.voice_name,
             "poll_interval": self.poll_interval,
+            "app_volume": self.app_volume,
+            "app_volume_file": self.app_volume_file,
             "text_hash": self.text_hash,
             "error": self.error,
         }

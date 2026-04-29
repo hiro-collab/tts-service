@@ -1,0 +1,1 @@
+"""Application volume control adapters."""

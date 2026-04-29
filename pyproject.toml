@@ -15,6 +15,7 @@ tts-speak = "tts_service.apps.speak_text:main"
 tts-watch-sword = "tts_service.apps.watch_sword_response:main"
 tts-serve = "tts_service.apps.watch_sword_response:main"
 tts-list-voices = "tts_service.apps.list_voices:main"
+tts-set-volume = "tts_service.apps.set_volume:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

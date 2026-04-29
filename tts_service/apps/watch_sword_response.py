@@ -11,6 +11,7 @@ from typing import Any
 from tts_service.adapters.players.file_output import FileOutputPlayer
 from tts_service.adapters.players.local_speaker import LocalSpeakerPlayer
 from tts_service.adapters.players.noop import NoopPlayer
+from tts_service.adapters.players.volume_control import VolumeControlledPlayer
 from tts_service.adapters.sources.http_source import HttpTtsRequestSource
 from tts_service.adapters.sources.sword_status_store import SwordStatusStoreSource
 from tts_service.adapters.status.json_status_store import JsonStatusStore
@@ -20,6 +21,7 @@ from tts_service.adapters.synthesizers.windows_sapi import (
     check_windows_sapi_silent,
     list_windows_sapi_voices,
 )
+from tts_service.adapters.volume.json_volume_store import JsonVolumeProvider, validate_app_volume
 from tts_service.core.dedupe import JsonDedupeStore
 from tts_service.core.pipeline import TtsPipeline
 from tts_service.core.types import TtsState
@@ -46,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--voice-name", default="")
     parser.add_argument("--rate", type=int, default=0)
     parser.add_argument("--volume", type=int, default=100)
+    parser.add_argument("--app-volume", type=_app_volume_arg, default=1.0, help="App volume from 0.0 to 1.0.")
+    parser.add_argument("--app-volume-file", type=Path, help="JSON file read before playback for app volume.")
     return parser
 
 
@@ -78,17 +82,18 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         effective_player = _effective_player_name(args.engine, args.player)
+        volume_provider = _build_volume_provider(args)
         _print_startup(args, source, source_target, effective_player)
 
         status_store = JsonStatusStore(args.output_status_dir)
-        context = _state_context(args, source_target, effective_player, service="running")
-        idle_state = TtsState.idle(**context)
+        context = _state_context(args, source_target, effective_player, volume_provider, service="running")
+        idle_state = TtsState.idle(**_materialized_state_context(context))
         status_store.write_state(idle_state)
         status_store.write_event(idle_state)
 
         dedupe_store = JsonDedupeStore(args.output_status_dir / "seen_requests.json")
         synthesizer = _build_synthesizer(args)
-        player = _build_player(args, effective_player)
+        player = _build_player(args, effective_player, volume_provider)
         pipeline = TtsPipeline(
             synthesizer=synthesizer,
             player=player,
@@ -109,8 +114,8 @@ def main(argv: list[str] | None = None) -> int:
                 if args.source == "status-file":
                     time.sleep(args.poll_interval)
         except KeyboardInterrupt:
-            stopped_context = _state_context(args, source_target, effective_player, service="stopped")
-            stopped_state = TtsState.idle(**stopped_context)
+            stopped_context = _state_context(args, source_target, effective_player, volume_provider, service="stopped")
+            stopped_state = TtsState.idle(**_materialized_state_context(stopped_context))
             status_store.write_state(stopped_state)
             status_store.write_event(stopped_state)
             print("tts_service watcher stopped", flush=True)
@@ -157,12 +162,14 @@ def _build_synthesizer(args: argparse.Namespace):
     )
 
 
-def _build_player(args: argparse.Namespace, effective_player: str):
+def _build_player(args: argparse.Namespace, effective_player: str, volume_provider: JsonVolumeProvider):
     if effective_player == "noop":
         return NoopPlayer()
     if effective_player == "file":
-        return FileOutputPlayer(args.output_audio_dir)
-    return LocalSpeakerPlayer()
+        base_player = FileOutputPlayer(args.output_audio_dir)
+    else:
+        base_player = LocalSpeakerPlayer()
+    return VolumeControlledPlayer(base_player, volume_provider, args.output_status_dir / "volume")
 
 
 def _effective_player_name(engine: str, player: str) -> str:
@@ -175,6 +182,7 @@ def _state_context(
     args: argparse.Namespace,
     source_target: str,
     effective_player: str,
+    volume_provider: JsonVolumeProvider,
     service: str,
 ) -> dict[str, Any]:
     return {
@@ -184,7 +192,17 @@ def _state_context(
         "player": effective_player,
         "voice_name": args.voice_name or None,
         "poll_interval": args.poll_interval if args.source == "status-file" else None,
+        "app_volume": volume_provider.get_volume,
+        "app_volume_file": str(_app_volume_file(args)),
     }
+
+
+def _materialized_state_context(context: dict[str, Any]) -> dict[str, Any]:
+    materialized = dict(context)
+    app_volume = materialized.get("app_volume")
+    if callable(app_volume):
+        materialized["app_volume"] = app_volume()
+    return materialized
 
 
 def _print_startup(args: argparse.Namespace, source: Any, source_target: str, effective_player: str) -> None:
@@ -197,6 +215,8 @@ def _print_startup(args: argparse.Namespace, source: Any, source_target: str, ef
     print(f"  engine: {args.engine}", flush=True)
     print(f"  player: {effective_player}", flush=True)
     print(f"  voice_name: {args.voice_name or '(default)'}", flush=True)
+    print(f"  app_volume: {_build_volume_provider(args).get_volume()}", flush=True)
+    print(f"  app_volume_file: {_app_volume_file(args)}", flush=True)
     print(f"  poll_interval: {args.poll_interval if args.source == 'status-file' else '(event queue)'}", flush=True)
 
 
@@ -212,6 +232,7 @@ def _dry_run(args: argparse.Namespace, source_target: str) -> int:
 def _build_health(args: argparse.Namespace, source_target: str) -> dict[str, Any]:
     effective_player = _effective_player_name(args.engine, args.player)
     checks = _path_checks(args, source_target)
+    volume_provider = _build_volume_provider(args)
     player_ok = effective_player != "speaker" or platform.system() == "Windows"
     engine_health: dict[str, Any] = {"name": args.engine, "ok": True}
 
@@ -256,6 +277,8 @@ def _build_health(args: argparse.Namespace, source_target: str) -> dict[str, Any
         "output_status_dir": str(args.output_status_dir),
         "source": args.source,
         "poll_interval": args.poll_interval if args.source == "status-file" else None,
+        "app_volume": volume_provider.get_volume(),
+        "app_volume_file": str(_app_volume_file(args)),
         "engine": engine_health,
         "player": {"name": effective_player, "ok": player_ok},
         "paths": checks,
@@ -264,6 +287,8 @@ def _build_health(args: argparse.Namespace, source_target: str) -> dict[str, Any
 
 def _path_checks(args: argparse.Namespace, source_target: str) -> dict[str, Any]:
     output_status_dir_usable = _can_create_or_use_dir(args.output_status_dir)
+    app_volume_file = _app_volume_file(args)
+    volume_provider = _build_volume_provider(args)
     if args.source == "http":
         return {
             "source": "http",
@@ -275,6 +300,9 @@ def _path_checks(args: argparse.Namespace, source_target: str) -> dict[str, Any]
             "latest_exists": None,
             "output_status_dir": str(args.output_status_dir),
             "output_status_dir_usable": output_status_dir_usable,
+            "app_volume": volume_provider.get_volume(),
+            "app_volume_file": str(app_volume_file),
+            "app_volume_file_exists": app_volume_file.exists(),
         }
 
     latest_path = Path(source_target)
@@ -287,6 +315,9 @@ def _path_checks(args: argparse.Namespace, source_target: str) -> dict[str, Any]
         "latest_exists": latest_path.exists(),
         "output_status_dir": str(args.output_status_dir),
         "output_status_dir_usable": output_status_dir_usable,
+        "app_volume": volume_provider.get_volume(),
+        "app_volume_file": str(app_volume_file),
+        "app_volume_file_exists": app_volume_file.exists(),
     }
 
 
@@ -346,6 +377,21 @@ def _is_japanese_voice(voice: dict[str, Any]) -> bool:
     culture = str(voice.get("culture", "")).lower()
     name = str(voice.get("name", "")).lower()
     return culture.startswith("ja") or "japanese" in name or "haruka" in name
+
+
+def _build_volume_provider(args: argparse.Namespace) -> JsonVolumeProvider:
+    return JsonVolumeProvider(_app_volume_file(args), default_volume=args.app_volume)
+
+
+def _app_volume_file(args: argparse.Namespace) -> Path:
+    return args.app_volume_file or args.output_status_dir / "app_volume.json"
+
+
+def _app_volume_arg(value: str) -> float:
+    try:
+        return validate_app_volume(float(value))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 if __name__ == "__main__":

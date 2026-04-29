@@ -115,12 +115,14 @@ class TtsPipeline:
         error: str | None = None,
     ) -> TtsState:
         return TtsState.from_request(phase, request, error=error).with_context(
-            service=_string_or_none(self.state_context.get("service")),
-            watching=_string_or_none(self.state_context.get("watching")),
-            engine=_string_or_none(self.state_context.get("engine")),
-            player=_string_or_none(self.state_context.get("player")),
-            voice_name=_string_or_none(self.state_context.get("voice_name")),
-            poll_interval=_float_or_none(self.state_context.get("poll_interval")),
+            service=_string_or_none(_context_value(self.state_context.get("service"))),
+            watching=_string_or_none(_context_value(self.state_context.get("watching"))),
+            engine=_string_or_none(_context_value(self.state_context.get("engine"))),
+            player=_string_or_none(_context_value(self.state_context.get("player"))),
+            voice_name=_string_or_none(_context_value(self.state_context.get("voice_name"))),
+            poll_interval=_float_or_none(_context_value(self.state_context.get("poll_interval"))),
+            app_volume=_float_or_none(_context_value(self.state_context.get("app_volume"))),
+            app_volume_file=_string_or_none(_context_value(self.state_context.get("app_volume_file"))),
         )
 
     def _request_event(
@@ -132,13 +134,21 @@ class TtsPipeline:
         metadata: Mapping[str, Any] | None = None,
     ) -> TtsEvent:
         return TtsEvent.from_request(event, request, error=error, metadata=metadata).with_context(
-            service=_string_or_none(self.state_context.get("service")),
-            watching=_string_or_none(self.state_context.get("watching")),
-            engine=_string_or_none(self.state_context.get("engine")),
-            player=_string_or_none(self.state_context.get("player")),
-            voice_name=_string_or_none(self.state_context.get("voice_name")),
-            poll_interval=_float_or_none(self.state_context.get("poll_interval")),
+            service=_string_or_none(_context_value(self.state_context.get("service"))),
+            watching=_string_or_none(_context_value(self.state_context.get("watching"))),
+            engine=_string_or_none(_context_value(self.state_context.get("engine"))),
+            player=_string_or_none(_context_value(self.state_context.get("player"))),
+            voice_name=_string_or_none(_context_value(self.state_context.get("voice_name"))),
+            poll_interval=_float_or_none(_context_value(self.state_context.get("poll_interval"))),
+            app_volume=_float_or_none(_context_value(self.state_context.get("app_volume"))),
+            app_volume_file=_string_or_none(_context_value(self.state_context.get("app_volume_file"))),
         )
+
+
+def _context_value(value: Any) -> Any:
+    if callable(value):
+        return value()
+    return value
 
 
 def _string_or_none(value: Any) -> str | None:

@@ -44,6 +44,8 @@ class WatchSwordResponseTests(unittest.TestCase):
                         "noop",
                         "--player",
                         "noop",
+                        "--app-volume",
+                        "0.25",
                         "--once",
                     ]
                 )
@@ -54,6 +56,7 @@ class WatchSwordResponseTests(unittest.TestCase):
             self.assertEqual(latest["service"], "running")
             self.assertEqual(latest["engine"], "noop")
             self.assertEqual(latest["player"], "noop")
+            self.assertEqual(latest["app_volume"], 0.25)
             self.assertEqual(latest["turn_id"], "turn-1")
             self.assertEqual(latest["message_id"], "msg-1")
 
@@ -106,6 +109,7 @@ class WatchSwordResponseTests(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["engine"]["name"], "noop")
             self.assertEqual(payload["player"]["name"], "noop")
+            self.assertEqual(payload["app_volume"], 1.0)
 
 
 if __name__ == "__main__":
