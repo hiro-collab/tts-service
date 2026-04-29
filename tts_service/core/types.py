@@ -126,6 +126,8 @@ class TtsEvent:
         poll_interval: float | None = None,
         app_volume: float | None = None,
         app_volume_file: str | None = None,
+        volume: int | None = None,
+        rate: int | None = None,
     ) -> "TtsEvent":
         metadata = dict(self.metadata)
         for key, value in {
@@ -137,6 +139,8 @@ class TtsEvent:
             "poll_interval": poll_interval,
             "app_volume": app_volume,
             "app_volume_file": app_volume_file,
+            "volume": volume,
+            "rate": rate,
         }.items():
             if value is not None:
                 metadata[key] = value
@@ -169,7 +173,27 @@ class TtsEvent:
             "text_hash": self.text_hash,
             "error": self.error,
         }
-        payload.update({key: value for key, value in self.metadata.items() if value is not None})
+        context_keys = (
+            "service",
+            "watching",
+            "engine",
+            "player",
+            "voice_name",
+            "poll_interval",
+            "app_volume",
+            "app_volume_file",
+            "volume",
+            "rate",
+        )
+        for key in context_keys:
+            payload[key] = self.metadata.get(key)
+        payload.update(
+            {
+                key: value
+                for key, value in self.metadata.items()
+                if value is not None and key not in context_keys
+            }
+        )
         return payload
 
 
@@ -190,6 +214,8 @@ class TtsState:
     poll_interval: float | None = None
     app_volume: float | None = None
     app_volume_file: str | None = None
+    volume: int | None = None
+    rate: int | None = None
     text_hash: str | None = None
     error: str | None = None
 
@@ -204,6 +230,8 @@ class TtsState:
         poll_interval: float | None = None,
         app_volume: float | None = None,
         app_volume_file: str | None = None,
+        volume: int | None = None,
+        rate: int | None = None,
     ) -> "TtsState":
         return cls(
             phase=TtsPhase.IDLE,
@@ -215,6 +243,8 @@ class TtsState:
             poll_interval=poll_interval,
             app_volume=app_volume,
             app_volume_file=app_volume_file,
+            volume=volume,
+            rate=rate,
         )
 
     @classmethod
@@ -245,6 +275,8 @@ class TtsState:
         poll_interval: float | None = None,
         app_volume: float | None = None,
         app_volume_file: str | None = None,
+        volume: int | None = None,
+        rate: int | None = None,
     ) -> "TtsState":
         return TtsState(
             phase=self.phase,
@@ -262,6 +294,8 @@ class TtsState:
             poll_interval=poll_interval if poll_interval is not None else self.poll_interval,
             app_volume=app_volume if app_volume is not None else self.app_volume,
             app_volume_file=app_volume_file if app_volume_file is not None else self.app_volume_file,
+            volume=volume if volume is not None else self.volume,
+            rate=rate if rate is not None else self.rate,
             text_hash=self.text_hash,
             error=self.error,
         )
@@ -283,6 +317,8 @@ class TtsState:
             "poll_interval": self.poll_interval,
             "app_volume": self.app_volume,
             "app_volume_file": self.app_volume_file,
+            "volume": self.volume,
+            "rate": self.rate,
             "text_hash": self.text_hash,
             "error": self.error,
         }

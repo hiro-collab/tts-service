@@ -78,6 +78,10 @@ class PipelineTests(unittest.TestCase):
                     "engine": "noop",
                     "player": "noop",
                     "poll_interval": 1.0,
+                    "app_volume": 0.5,
+                    "app_volume_file": "C:/status/app_volume.json",
+                    "volume": 80,
+                    "rate": -1,
                 },
             )
             request = TtsRequest(text="hello", metadata={"turn_id": "turn-1"})
@@ -89,9 +93,16 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(status.states[-1].engine, "noop")
             self.assertEqual(status.states[-1].player, "noop")
             self.assertEqual(status.states[-1].turn_id, "turn-1")
+            self.assertEqual(status.states[-1].app_volume, 0.5)
+            self.assertEqual(status.states[-1].app_volume_file, "C:/status/app_volume.json")
+            self.assertEqual(status.states[-1].volume, 80)
+            self.assertEqual(status.states[-1].rate, -1)
             event = next(event for event in status.events if isinstance(event, TtsEvent))
             self.assertEqual(event.turn_id, "turn-1")
             self.assertEqual(event.metadata["service"], "running")
+            self.assertEqual(event.to_public_dict()["app_volume"], 0.5)
+            self.assertEqual(event.to_public_dict()["volume"], 80)
+            self.assertEqual(event.to_public_dict()["rate"], -1)
             self.assertIsInstance(event.monotonic_time, float)
 
     def test_duplicate_request_is_skipped(self) -> None:

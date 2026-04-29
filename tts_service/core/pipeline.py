@@ -123,6 +123,8 @@ class TtsPipeline:
             poll_interval=_float_or_none(_context_value(self.state_context.get("poll_interval"))),
             app_volume=_float_or_none(_context_value(self.state_context.get("app_volume"))),
             app_volume_file=_string_or_none(_context_value(self.state_context.get("app_volume_file"))),
+            volume=_int_or_none(_context_value(self.state_context.get("volume"))),
+            rate=_int_or_none(_context_value(self.state_context.get("rate"))),
         )
 
     def _request_event(
@@ -142,6 +144,8 @@ class TtsPipeline:
             poll_interval=_float_or_none(_context_value(self.state_context.get("poll_interval"))),
             app_volume=_float_or_none(_context_value(self.state_context.get("app_volume"))),
             app_volume_file=_string_or_none(_context_value(self.state_context.get("app_volume_file"))),
+            volume=_int_or_none(_context_value(self.state_context.get("volume"))),
+            rate=_int_or_none(_context_value(self.state_context.get("rate"))),
         )
 
 
@@ -160,4 +164,10 @@ def _string_or_none(value: Any) -> str | None:
 def _float_or_none(value: Any) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
+    return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
     return None

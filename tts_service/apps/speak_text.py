@@ -56,6 +56,8 @@ def main(argv: list[str] | None = None) -> int:
         voice_name=args.voice_name or None,
         app_volume=volume_provider.get_volume(),
         app_volume_file=str(app_volume_file),
+        volume=args.volume,
+        rate=args.rate,
     )
     status_store.write_state(idle_state)
     status_store.write_event(idle_state)
@@ -93,6 +95,8 @@ def main(argv: list[str] | None = None) -> int:
             "player": effective_player,
             "app_volume": volume_provider.get_volume,
             "app_volume_file": str(app_volume_file),
+            "volume": args.volume,
+            "rate": args.rate,
         },
     )
     result = pipeline.speak(request)

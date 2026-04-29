@@ -27,6 +27,10 @@ class JsonStatusStoreTests(unittest.TestCase):
                 engine="noop",
                 player="noop",
                 poll_interval=1.0,
+                app_volume=0.75,
+                app_volume_file="C:/status/app_volume.json",
+                volume=90,
+                rate=2,
             )
             store.write_state(state)
             store.write_event(TtsState.from_request(TtsPhase.SPEAKING, request))
@@ -42,10 +46,18 @@ class JsonStatusStoreTests(unittest.TestCase):
             self.assertEqual(latest["turn_id"], "turn-1")
             self.assertEqual(latest["engine"], "noop")
             self.assertEqual(latest["player"], "noop")
+            self.assertEqual(latest["app_volume"], 0.75)
+            self.assertEqual(latest["app_volume_file"], "C:/status/app_volume.json")
+            self.assertEqual(latest["volume"], 90)
+            self.assertEqual(latest["rate"], 2)
             latency_event = json.loads(event_lines[-1])
             self.assertEqual(latency_event["type"], "tts_event")
             self.assertEqual(latency_event["event"], "tts_request")
             self.assertEqual(latency_event["turn_id"], "turn-1")
+            self.assertIn("app_volume", latency_event)
+            self.assertIn("app_volume_file", latency_event)
+            self.assertIn("volume", latency_event)
+            self.assertIn("rate", latency_event)
             self.assertIsInstance(latency_event["monotonic_time"], float)
 
 

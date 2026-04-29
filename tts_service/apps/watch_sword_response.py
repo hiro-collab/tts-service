@@ -21,7 +21,12 @@ from tts_service.adapters.synthesizers.windows_sapi import (
     check_windows_sapi_silent,
     list_windows_sapi_voices,
 )
-from tts_service.adapters.volume.json_volume_store import JsonVolumeProvider, validate_app_volume
+from tts_service.adapters.volume.json_volume_store import (
+    JsonVolumeProvider,
+    validate_app_volume,
+    volume_from_payload,
+    write_app_volume,
+)
 from tts_service.core.dedupe import JsonDedupeStore
 from tts_service.core.pipeline import TtsPipeline
 from tts_service.core.types import TtsState
@@ -66,7 +71,8 @@ def main(argv: list[str] | None = None) -> int:
             print(message, file=sys.stderr)
         return 2
 
-    source = _build_source(args)
+    volume_provider = _build_volume_provider(args)
+    source = _build_source(args, volume_provider)
     source_target = _source_target(source)
     try:
         if args.health_json:
@@ -82,7 +88,6 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         effective_player = _effective_player_name(args.engine, args.player)
-        volume_provider = _build_volume_provider(args)
         _print_startup(args, source, source_target, effective_player)
 
         status_store = JsonStatusStore(args.output_status_dir)
@@ -90,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         idle_state = TtsState.idle(**_materialized_state_context(context))
         status_store.write_state(idle_state)
         status_store.write_event(idle_state)
+        volume_tracker = VolumeStatusTracker(_app_volume_file(args), volume_provider.get_volume())
 
         dedupe_store = JsonDedupeStore(args.output_status_dir / "seen_requests.json")
         synthesizer = _build_synthesizer(args)
@@ -109,6 +115,8 @@ def main(argv: list[str] | None = None) -> int:
                     result = pipeline.speak(request)
                     if not result.ok:
                         print(result.error, file=sys.stderr)
+                else:
+                    _write_idle_if_volume_changed(volume_tracker, volume_provider, status_store, context)
                 if args.once:
                     break
                 if args.source == "status-file":
@@ -125,13 +133,15 @@ def main(argv: list[str] | None = None) -> int:
         _close_source(source)
 
 
-def _build_source(args: argparse.Namespace):
+def _build_source(args: argparse.Namespace, volume_provider: JsonVolumeProvider):
     if args.source == "http":
         return HttpTtsRequestSource(
             host=args.http_host,
             port=args.http_port,
             queue_size=args.http_queue_size,
             max_chunk_chars=args.http_chunk_max_chars,
+            volume_getter=lambda: _volume_payload(args, volume_provider),
+            volume_setter=lambda payload: _set_volume_from_http(args, volume_provider, payload),
         )
     assert args.status_dir is not None
     return SwordStatusStoreSource(args.status_dir)
@@ -194,6 +204,8 @@ def _state_context(
         "poll_interval": args.poll_interval if args.source == "status-file" else None,
         "app_volume": volume_provider.get_volume,
         "app_volume_file": str(_app_volume_file(args)),
+        "volume": args.volume,
+        "rate": args.rate,
     }
 
 
@@ -203,6 +215,42 @@ def _materialized_state_context(context: dict[str, Any]) -> dict[str, Any]:
     if callable(app_volume):
         materialized["app_volume"] = app_volume()
     return materialized
+
+
+class VolumeStatusTracker:
+    def __init__(self, path: Path, volume: float) -> None:
+        self.path = path
+        self.signature = _file_signature(path)
+        self.volume = volume
+
+    def refresh_changed(self, volume: float) -> bool:
+        signature = _file_signature(self.path)
+        changed = signature != self.signature or volume != self.volume
+        self.signature = signature
+        self.volume = volume
+        return changed
+
+
+def _write_idle_if_volume_changed(
+    tracker: VolumeStatusTracker,
+    volume_provider: JsonVolumeProvider,
+    status_store: JsonStatusStore,
+    context: dict[str, Any],
+) -> None:
+    volume = volume_provider.get_volume()
+    if not tracker.refresh_changed(volume):
+        return
+    state = TtsState.idle(**_materialized_state_context(context))
+    status_store.write_state(state)
+    status_store.write_event(state)
+
+
+def _file_signature(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
 
 
 def _print_startup(args: argparse.Namespace, source: Any, source_target: str, effective_player: str) -> None:
@@ -215,6 +263,8 @@ def _print_startup(args: argparse.Namespace, source: Any, source_target: str, ef
     print(f"  engine: {args.engine}", flush=True)
     print(f"  player: {effective_player}", flush=True)
     print(f"  voice_name: {args.voice_name or '(default)'}", flush=True)
+    print(f"  volume: {args.volume}", flush=True)
+    print(f"  rate: {args.rate}", flush=True)
     print(f"  app_volume: {_build_volume_provider(args).get_volume()}", flush=True)
     print(f"  app_volume_file: {_app_volume_file(args)}", flush=True)
     print(f"  poll_interval: {args.poll_interval if args.source == 'status-file' else '(event queue)'}", flush=True)
@@ -277,6 +327,8 @@ def _build_health(args: argparse.Namespace, source_target: str) -> dict[str, Any
         "output_status_dir": str(args.output_status_dir),
         "source": args.source,
         "poll_interval": args.poll_interval if args.source == "status-file" else None,
+        "volume": args.volume,
+        "rate": args.rate,
         "app_volume": volume_provider.get_volume(),
         "app_volume_file": str(_app_volume_file(args)),
         "engine": engine_health,
@@ -300,6 +352,8 @@ def _path_checks(args: argparse.Namespace, source_target: str) -> dict[str, Any]
             "latest_exists": None,
             "output_status_dir": str(args.output_status_dir),
             "output_status_dir_usable": output_status_dir_usable,
+            "volume": args.volume,
+            "rate": args.rate,
             "app_volume": volume_provider.get_volume(),
             "app_volume_file": str(app_volume_file),
             "app_volume_file_exists": app_volume_file.exists(),
@@ -315,6 +369,8 @@ def _path_checks(args: argparse.Namespace, source_target: str) -> dict[str, Any]
         "latest_exists": latest_path.exists(),
         "output_status_dir": str(args.output_status_dir),
         "output_status_dir_usable": output_status_dir_usable,
+        "volume": args.volume,
+        "rate": args.rate,
         "app_volume": volume_provider.get_volume(),
         "app_volume_file": str(app_volume_file),
         "app_volume_file_exists": app_volume_file.exists(),
@@ -381,6 +437,24 @@ def _is_japanese_voice(voice: dict[str, Any]) -> bool:
 
 def _build_volume_provider(args: argparse.Namespace) -> JsonVolumeProvider:
     return JsonVolumeProvider(_app_volume_file(args), default_volume=args.app_volume)
+
+
+def _volume_payload(args: argparse.Namespace, volume_provider: JsonVolumeProvider) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "app_volume": volume_provider.get_volume(),
+        "app_volume_file": str(_app_volume_file(args)),
+    }
+
+
+def _set_volume_from_http(
+    args: argparse.Namespace,
+    volume_provider: JsonVolumeProvider,
+    payload: Any,
+) -> dict[str, Any]:
+    volume = volume_from_payload(payload, default=volume_provider.default_volume)
+    write_app_volume(_app_volume_file(args), volume)
+    return _volume_payload(args, volume_provider)
 
 
 def _app_volume_file(args: argparse.Namespace) -> Path:

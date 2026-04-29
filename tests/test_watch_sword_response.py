@@ -6,7 +6,9 @@ import json
 import unittest
 from pathlib import Path
 
-from tts_service.apps.watch_sword_response import main
+from tts_service.adapters.status.json_status_store import JsonStatusStore
+from tts_service.adapters.volume.json_volume_store import JsonVolumeProvider, write_app_volume
+from tts_service.apps.watch_sword_response import VolumeStatusTracker, _write_idle_if_volume_changed, main
 from tests.helpers import workspace_temp_dir
 
 
@@ -57,6 +59,8 @@ class WatchSwordResponseTests(unittest.TestCase):
             self.assertEqual(latest["engine"], "noop")
             self.assertEqual(latest["player"], "noop")
             self.assertEqual(latest["app_volume"], 0.25)
+            self.assertEqual(latest["volume"], 100)
+            self.assertEqual(latest["rate"], 0)
             self.assertEqual(latest["turn_id"], "turn-1")
             self.assertEqual(latest["message_id"], "msg-1")
 
@@ -110,6 +114,39 @@ class WatchSwordResponseTests(unittest.TestCase):
             self.assertEqual(payload["engine"]["name"], "noop")
             self.assertEqual(payload["player"]["name"], "noop")
             self.assertEqual(payload["app_volume"], 1.0)
+            self.assertEqual(payload["volume"], 100)
+            self.assertEqual(payload["rate"], 0)
+
+    def test_volume_file_change_writes_idle_status(self) -> None:
+        with workspace_temp_dir() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "tts"
+            volume_file = output_dir / "app_volume.json"
+            provider = JsonVolumeProvider(volume_file, default_volume=1.0)
+            store = JsonStatusStore(output_dir)
+            context = {
+                "service": "running",
+                "watching": "http://127.0.0.1:8765/api/tts",
+                "engine": "noop",
+                "player": "noop",
+                "voice_name": None,
+                "poll_interval": None,
+                "app_volume": provider.get_volume,
+                "app_volume_file": str(volume_file),
+                "volume": 100,
+                "rate": 0,
+            }
+            tracker = VolumeStatusTracker(volume_file, provider.get_volume())
+
+            write_app_volume(volume_file, 0.4)
+            _write_idle_if_volume_changed(tracker, provider, store, context)
+
+            latest = json.loads((output_dir / "latest_tts_state.json").read_text(encoding="utf-8"))
+            self.assertEqual(latest["phase"], "idle")
+            self.assertEqual(latest["app_volume"], 0.4)
+            self.assertEqual(latest["app_volume_file"], str(volume_file))
+            self.assertEqual(latest["volume"], 100)
+            self.assertEqual(latest["rate"], 0)
 
 
 if __name__ == "__main__":

@@ -101,6 +101,8 @@ python -m tts_service.apps.set_volume 0.35 --output-status-dir .cache\tts_servic
 }
 ```
 
+watcher 起動中に `app_volume.json` が変更された場合は、読み上げリクエストがなくても `latest_tts_state.json` を `idle` 状態で更新します。
+
 日本語が不自然に読まれる場合は、まず日本語音声を明示してください。既定音声が英語の場合、`こんにちは` のような日本語テキストは英語音声の発音規則で読まれてしまいます。
 
 Windows SAPI が「音声がインストールされていない」系のエラーを返す場合は、現在のユーザーで利用可能な Windows 音声をインストールしてから再実行してください。MVP では、空の WAV ファイルを成功扱いせずエラーにします。
@@ -236,6 +238,20 @@ Invoke-RestMethod `
 
 HTTP source はローカル実行前提です。認証や通信路保護が必要な環境では、前段 proxy などで保護してください。
 
+HTTP source 起動中は app volume もHTTPで取得・変更できます。
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8765/api/volume
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:8765/api/volume `
+  -ContentType 'application/json' `
+  -Body '{"app_volume":0.35}'
+```
+
+`POST /api/volume` は `app_volume.json` を更新します。ファイルを直接書き換えた場合と同じく、watcher は次のループで status に反映します。
+
 ## 重複防止
 
 watcher は、処理済みリクエストの識別子を次のファイルに保存します。
@@ -270,9 +286,9 @@ Dify 応答本文そのものは、重複防止ファイルには書きません
 - `error`: 合成または再生に失敗
 
 状態 JSON には ID、source、本文ハッシュ、エラー内容を書きます。Dify 応答本文や API キーは意図的に含めません。
-watcher 起動中は `service: "running"`、Ctrl+C 終了時は `service: "stopped"` を書きます。watcher 由来の状態には `watching`、`engine`、`player`、`voice_name`、`poll_interval`、`app_volume`、`app_volume_file` も含まれます。
+watcher 起動中は `service: "running"`、Ctrl+C 終了時は `service: "stopped"` を書きます。watcher 由来の状態には `watching`、`engine`、`player`、`voice_name`、`poll_interval`、`app_volume`、`app_volume_file`、`volume`、`rate` も含まれます。
 
-`events.jsonl` には状態遷移に加えて、低遅延化の比較用に次の計測イベントを書きます。各イベントは `wall_time` と `monotonic_time` / `perf_counter`、`turn_id`、`request_id`、`message_id`、`conversation_id`、`source`、本文の `text_hash` を持ち、本文そのものは書きません。
+`events.jsonl` には状態遷移に加えて、低遅延化の比較用に次の計測イベントを書きます。各イベントは `wall_time` と `monotonic_time` / `perf_counter`、`turn_id`、`request_id`、`message_id`、`conversation_id`、`source`、本文の `text_hash`、`app_volume`、`app_volume_file`、`volume`、`rate` を持ち、本文そのものは書きません。
 
 - `tts_request`
 - `tts_first_audio`
@@ -295,7 +311,9 @@ watcher 起動中は `service: "running"`、Ctrl+C 終了時は `service: "stopp
   "engine": "windows-sapi",
   "player": "speaker",
   "app_volume": 0.7,
-  "app_volume_file": ".cache/tts_service/app_volume.json"
+  "app_volume_file": ".cache/tts_service/app_volume.json",
+  "volume": 100,
+  "rate": 0
 }
 ```
 

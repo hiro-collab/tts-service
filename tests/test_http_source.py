@@ -5,6 +5,7 @@ import unittest
 from urllib import request as urlrequest
 
 from tts_service.adapters.sources.http_source import HttpTtsRequestSource
+from tts_service.adapters.volume.json_volume_store import volume_from_payload
 
 
 class HttpTtsRequestSourceTests(unittest.TestCase):
@@ -76,6 +77,33 @@ class HttpTtsRequestSourceTests(unittest.TestCase):
         finally:
             source.close()
 
+    def test_volume_endpoint_gets_and_sets_app_volume(self) -> None:
+        state = {"volume": 1.0}
+
+        def get_volume() -> dict:
+            return {"ok": True, "app_volume": state["volume"], "app_volume_file": "memory"}
+
+        def set_volume(payload: dict) -> dict:
+            state["volume"] = volume_from_payload(payload)
+            return get_volume()
+
+        source = HttpTtsRequestSource(
+            port=0,
+            wait_timeout=0.01,
+            volume_getter=get_volume,
+            volume_setter=set_volume,
+        )
+        try:
+            first = _get_json(source.volume_endpoint)
+            second = _post_json(source.volume_endpoint, {"app_volume": 0.3})
+            third = _get_json(source.volume_endpoint)
+
+            self.assertEqual(first["app_volume"], 1.0)
+            self.assertEqual(second["app_volume"], 0.3)
+            self.assertEqual(third["app_volume"], 0.3)
+        finally:
+            source.close()
+
 
 def _post_json(url: str, payload: dict) -> dict:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -86,6 +114,11 @@ def _post_json(url: str, payload: dict) -> dict:
         headers={"Content-Type": "application/json"},
     )
     with urlrequest.urlopen(request, timeout=2.0) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _get_json(url: str) -> dict:
+    with urlrequest.urlopen(url, timeout=2.0) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

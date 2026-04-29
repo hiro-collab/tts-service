@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import queue
 import threading
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from tts_service.adapters.sources.sword_status_store import request_from_sword_payload
@@ -55,15 +55,21 @@ class HttpTtsRequestSource:
         port: int = 8765,
         request_path: str = "/api/tts",
         chunk_path: str = "/api/tts/chunk",
+        volume_path: str = "/api/volume",
         queue_size: int = 100,
         wait_timeout: float = 0.1,
         max_chunk_chars: int = 80,
         max_body_bytes: int = 1_000_000,
+        volume_getter: Callable[[], dict[str, Any]] | None = None,
+        volume_setter: Callable[[Any], dict[str, Any]] | None = None,
     ) -> None:
         self.request_path = _normalize_path(request_path)
         self.chunk_path = _normalize_path(chunk_path)
+        self.volume_path = _normalize_path(volume_path)
         self.wait_timeout = wait_timeout
         self.max_body_bytes = max_body_bytes
+        self.volume_getter = volume_getter
+        self.volume_setter = volume_setter
         self._queue: queue.Queue[TtsRequest] = queue.Queue(maxsize=queue_size)
         self._chunker = StreamingTextChunker(max_chars=max_chunk_chars)
         self._server = ThreadingHTTPServer((host, port), self._handler_class())
@@ -78,6 +84,10 @@ class HttpTtsRequestSource:
     @property
     def chunk_endpoint(self) -> str:
         return f"http://{self.host}:{self.port}{self.chunk_path}"
+
+    @property
+    def volume_endpoint(self) -> str:
+        return f"http://{self.host}:{self.port}{self.volume_path}"
 
     @property
     def queued_count(self) -> int:
@@ -114,6 +124,9 @@ class HttpTtsRequestSource:
 
     def _handle_get(self, handler: BaseHTTPRequestHandler) -> None:
         path = urlsplit(handler.path).path
+        if path == self.volume_path:
+            self._handle_volume_get(handler)
+            return
         if path != "/health":
             _write_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
             return
@@ -125,12 +138,16 @@ class HttpTtsRequestSource:
                 "source": "http",
                 "endpoint": self.endpoint,
                 "chunk_endpoint": self.chunk_endpoint,
+                "volume_endpoint": self.volume_endpoint,
                 "queued": self.queued_count,
             },
         )
 
     def _handle_post(self, handler: BaseHTTPRequestHandler) -> None:
         path = urlsplit(handler.path).path
+        if path == self.volume_path:
+            self._handle_volume_post(handler)
+            return
         if path not in {self.request_path, self.chunk_path}:
             _write_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
             return
@@ -169,6 +186,32 @@ class HttpTtsRequestSource:
                 "request_ids": [request.request_id for request in requests],
             },
         )
+
+    def _handle_volume_get(self, handler: BaseHTTPRequestHandler) -> None:
+        if self.volume_getter is None:
+            _write_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "error": "volume API disabled"})
+            return
+        try:
+            payload = self.volume_getter()
+        except Exception as exc:
+            _write_json(handler, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+            return
+        _write_json(handler, HTTPStatus.OK, payload)
+
+    def _handle_volume_post(self, handler: BaseHTTPRequestHandler) -> None:
+        if self.volume_setter is None:
+            _write_json(handler, HTTPStatus.NOT_FOUND, {"ok": False, "error": "volume API disabled"})
+            return
+        try:
+            payload = self._read_json_body(handler)
+            response = self.volume_setter(payload)
+        except ValueError as exc:
+            _write_json(handler, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+        except Exception as exc:
+            _write_json(handler, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+            return
+        _write_json(handler, HTTPStatus.OK, response)
 
     def _read_json_body(self, handler: BaseHTTPRequestHandler) -> Any:
         try:
