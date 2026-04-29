@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import ipaddress
 import json
+import os
 import queue
 import threading
+import time
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -62,18 +65,33 @@ class HttpTtsRequestSource:
         max_body_bytes: int = 1_000_000,
         volume_getter: Callable[[], dict[str, Any]] | None = None,
         volume_setter: Callable[[Any], dict[str, Any]] | None = None,
+        phase_getter: Callable[[], str] | None = None,
+        shutdown_callback: Callable[[], None] | None = None,
+        shutdown_token: str | None = None,
+        module_name: str = "tts_service",
     ) -> None:
         self.request_path = _normalize_path(request_path)
         self.chunk_path = _normalize_path(chunk_path)
         self.volume_path = _normalize_path(volume_path)
+        self.shutdown_path = "/shutdown"
         self.wait_timeout = wait_timeout
         self.max_body_bytes = max_body_bytes
         self.volume_getter = volume_getter
         self.volume_setter = volume_setter
+        self.phase_getter = phase_getter or (lambda: "idle")
+        self.shutdown_callback = shutdown_callback
+        self.shutdown_token = shutdown_token
+        self.module_name = module_name
+        if shutdown_token is None and not _is_loopback_bind(host):
+            raise ValueError("shutdown token is required when HTTP source is not bound to loopback")
         self._queue: queue.Queue[TtsRequest] = queue.Queue(maxsize=queue_size)
         self._chunker = StreamingTextChunker(max_chars=max_chunk_chars)
-        self._server = ThreadingHTTPServer((host, port), self._handler_class())
+        self._server = _TtsThreadingHTTPServer((host, port), self._handler_class())
         self.host, self.port = self._server.server_address[:2]
+        self.started_at_monotonic = time.monotonic()
+        self._shutdown_event = threading.Event()
+        self._close_lock = threading.Lock()
+        self._closed = False
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
@@ -90,8 +108,20 @@ class HttpTtsRequestSource:
         return f"http://{self.host}:{self.port}{self.volume_path}"
 
     @property
+    def health_endpoint(self) -> str:
+        return f"http://{self.host}:{self.port}/health"
+
+    @property
+    def shutdown_endpoint(self) -> str:
+        return f"http://{self.host}:{self.port}{self.shutdown_path}"
+
+    @property
     def queued_count(self) -> int:
         return self._queue.qsize()
+
+    @property
+    def shutdown_requested(self) -> bool:
+        return self._shutdown_event.is_set()
 
     def next_request(self) -> TtsRequest | None:
         try:
@@ -100,9 +130,27 @@ class HttpTtsRequestSource:
             return None
 
     def close(self) -> None:
-        self._server.shutdown()
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+        self._shutdown_event.set()
+        if threading.current_thread() is not self._thread:
+            self._server.shutdown()
+            self._thread.join(timeout=1.0)
         self._server.server_close()
-        self._thread.join(timeout=1.0)
+
+    def request_shutdown(self) -> None:
+        first_request = not self._shutdown_event.is_set()
+        self._shutdown_event.set()
+        if not first_request:
+            return
+        if self.shutdown_callback is not None:
+            try:
+                self.shutdown_callback()
+            except Exception:
+                pass
+        threading.Thread(target=self._server.shutdown, daemon=True).start()
 
     def _handler_class(self) -> type[BaseHTTPRequestHandler]:
         source = self
@@ -135,16 +183,26 @@ class HttpTtsRequestSource:
             HTTPStatus.OK,
             {
                 "ok": True,
+                "module": self.module_name,
                 "source": "http",
+                "pid": os.getpid(),
+                "uptime_s": round(time.monotonic() - self.started_at_monotonic, 3),
+                "host": self.host,
+                "port": self.port,
                 "endpoint": self.endpoint,
                 "chunk_endpoint": self.chunk_endpoint,
                 "volume_endpoint": self.volume_endpoint,
+                "shutdown_url": self.shutdown_endpoint,
                 "queued": self.queued_count,
+                "phase": self.phase_getter(),
             },
         )
 
     def _handle_post(self, handler: BaseHTTPRequestHandler) -> None:
         path = urlsplit(handler.path).path
+        if path == self.shutdown_path:
+            self._handle_shutdown_post(handler)
+            return
         if path == self.volume_path:
             self._handle_volume_post(handler)
             return
@@ -212,6 +270,33 @@ class HttpTtsRequestSource:
             _write_json(handler, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
             return
         _write_json(handler, HTTPStatus.OK, response)
+
+    def _handle_shutdown_post(self, handler: BaseHTTPRequestHandler) -> None:
+        if not self._shutdown_authorized(handler):
+            _write_json(handler, HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized"})
+            return
+        _write_json(
+            handler,
+            HTTPStatus.ACCEPTED,
+            {
+                "ok": True,
+                "module": self.module_name,
+                "shutting_down": True,
+            },
+        )
+        threading.Thread(target=self._request_shutdown_after_response, daemon=True).start()
+
+    def _request_shutdown_after_response(self) -> None:
+        time.sleep(0.05)
+        self.request_shutdown()
+
+    def _shutdown_authorized(self, handler: BaseHTTPRequestHandler) -> bool:
+        if not self.shutdown_token:
+            return True
+        bearer = handler.headers.get("Authorization", "")
+        if bearer == f"Bearer {self.shutdown_token}":
+            return True
+        return handler.headers.get("X-Sword-Agent-Token") == self.shutdown_token
 
     def _read_json_body(self, handler: BaseHTTPRequestHandler) -> Any:
         try:
@@ -304,6 +389,19 @@ def _chunk_message_id(message_id: str | None, stream_id: str, index: int) -> str
     return f"{base}:chunk:{index}"
 
 
+class _TtsThreadingHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+
+def _is_loopback_bind(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _write_json(
     handler: BaseHTTPRequestHandler,
     status: HTTPStatus,
@@ -313,7 +411,7 @@ def _write_json(
     handler.send_response(status.value)
     handler.send_header("Access-Control-Allow-Origin", "*")
     handler.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-    handler.send_header("Access-Control-Allow-Headers", "Content-Type")
+    handler.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Sword-Agent-Token")
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()

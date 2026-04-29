@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 import platform
 import sys
-import time
 from typing import Any
 
 from tts_service.adapters.players.file_output import FileOutputPlayer
@@ -29,7 +28,13 @@ from tts_service.adapters.volume.json_volume_store import (
 )
 from tts_service.core.dedupe import JsonDedupeStore
 from tts_service.core.pipeline import TtsPipeline
-from tts_service.core.types import TtsState
+from tts_service.core.runtime import (
+    RuntimeStatusWriter,
+    ShutdownController,
+    command_line_for_module,
+    install_signal_handlers,
+)
+from tts_service.core.types import TtsState, utc_now_iso
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -42,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--http-port", type=int, default=8765)
     parser.add_argument("--http-queue-size", type=int, default=100)
     parser.add_argument("--http-chunk-max-chars", type=int, default=80)
+    parser.add_argument("--shutdown-token", help="Token required for POST /shutdown. Required for non-loopback HTTP binds.")
+    parser.add_argument("--runtime-status-file", type=Path, help="Write PID and shutdown metadata to this JSON file.")
     parser.add_argument("--once", action="store_true", help="Check once and exit. Useful for tests or scheduled runs.")
     parser.add_argument("--dry-run", action="store_true", help="Validate settings and paths, then exit.")
     parser.add_argument("--health-json", action="store_true", help="Print machine-readable startup health, then exit.")
@@ -59,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    command_line = command_line_for_module("tts_service.apps.watch_sword_response", argv)
     args = build_parser().parse_args(argv)
     if args.list_voices:
         return _list_voices(json_output=args.json)
@@ -72,8 +80,23 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     volume_provider = _build_volume_provider(args)
-    source = _build_source(args, volume_provider)
+    shutdown = ShutdownController()
+    pipeline_holder: dict[str, TtsPipeline | None] = {"pipeline": None}
+    try:
+        source = _build_source(args, volume_provider, shutdown, lambda: _current_phase(pipeline_holder))
+    except Exception as exc:
+        if args.health_json:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 1
+        print(f"failed to start source: {exc}", file=sys.stderr)
+        return 2
     source_target = _source_target(source)
+    status_store: JsonStatusStore | None = None
+    context: dict[str, Any] | None = None
+    pipeline: TtsPipeline | None = None
+    runtime_writer = RuntimeStatusWriter(args.runtime_status_file)
+    runtime_started = False
+    watcher_started = False
     try:
         if args.health_json:
             health = _build_health(args, source_target)
@@ -89,12 +112,25 @@ def main(argv: list[str] | None = None) -> int:
 
         effective_player = _effective_player_name(args.engine, args.player)
         _print_startup(args, source, source_target, effective_player)
+        install_signal_handlers(shutdown)
 
         status_store = JsonStatusStore(args.output_status_dir)
         context = _state_context(args, source_target, effective_player, volume_provider, service="running")
         idle_state = TtsState.idle(**_materialized_state_context(context))
         status_store.write_state(idle_state)
         status_store.write_event(idle_state)
+        runtime_writer.write_running(
+            module="tts_service",
+            started_at=utc_now_iso(),
+            host=_runtime_host(source),
+            port=_runtime_port(source),
+            health_url=_runtime_health_url(source),
+            shutdown_url=_runtime_shutdown_url(source),
+            shutdown_command=None if isinstance(source, HttpTtsRequestSource) else "SIGINT or SIGTERM",
+            command_line=command_line,
+        )
+        runtime_started = True
+        watcher_started = True
         volume_tracker = VolumeStatusTracker(_app_volume_file(args), volume_provider.get_volume())
 
         dedupe_store = JsonDedupeStore(args.output_status_dir / "seen_requests.json")
@@ -107,9 +143,11 @@ def main(argv: list[str] | None = None) -> int:
             dedupe_store=dedupe_store,
             state_context=context,
         )
+        pipeline_holder["pipeline"] = pipeline
+        shutdown.add_callback(lambda _reason: pipeline.stop())
 
         try:
-            while True:
+            while not shutdown.is_requested():
                 request = source.next_request()
                 if request is not None:
                     result = pipeline.speak(request)
@@ -120,20 +158,33 @@ def main(argv: list[str] | None = None) -> int:
                 if args.once:
                     break
                 if args.source == "status-file":
-                    time.sleep(args.poll_interval)
+                    shutdown.wait(args.poll_interval)
         except KeyboardInterrupt:
-            stopped_context = _state_context(args, source_target, effective_player, volume_provider, service="stopped")
+            shutdown.request("keyboard_interrupt")
+            return 130
+        return _shutdown_exit_code(shutdown)
+    finally:
+        if pipeline is not None:
+            pipeline.close()
+        _close_source(source)
+        if status_store is not None and context is not None and shutdown.is_requested():
+            stopped_context = dict(context)
+            stopped_context["service"] = "stopped"
             stopped_state = TtsState.idle(**_materialized_state_context(stopped_context))
             status_store.write_state(stopped_state)
             status_store.write_event(stopped_state)
+        if runtime_started:
+            runtime_writer.write_stopped()
+        if watcher_started and (shutdown.is_requested() or not args.once):
             print("tts_service watcher stopped", flush=True)
-            return 130
-        return 0
-    finally:
-        _close_source(source)
 
 
-def _build_source(args: argparse.Namespace, volume_provider: JsonVolumeProvider):
+def _build_source(
+    args: argparse.Namespace,
+    volume_provider: JsonVolumeProvider,
+    shutdown: ShutdownController,
+    phase_getter: Any,
+):
     if args.source == "http":
         return HttpTtsRequestSource(
             host=args.http_host,
@@ -142,6 +193,9 @@ def _build_source(args: argparse.Namespace, volume_provider: JsonVolumeProvider)
             max_chunk_chars=args.http_chunk_max_chars,
             volume_getter=lambda: _volume_payload(args, volume_provider),
             volume_setter=lambda payload: _set_volume_from_http(args, volume_provider, payload),
+            phase_getter=phase_getter,
+            shutdown_callback=lambda: shutdown.request("http_shutdown"),
+            shutdown_token=args.shutdown_token,
         )
     assert args.status_dir is not None
     return SwordStatusStoreSource(args.status_dir)
@@ -159,6 +213,48 @@ def _close_source(source: Any) -> None:
     close = getattr(source, "close", None)
     if callable(close):
         close()
+
+
+def _current_phase(pipeline_holder: dict[str, TtsPipeline | None]) -> str:
+    pipeline = pipeline_holder.get("pipeline")
+    if pipeline is None:
+        return "idle"
+    return pipeline.phase.value
+
+
+def _runtime_host(source: Any) -> str | None:
+    if isinstance(source, HttpTtsRequestSource):
+        return source.host
+    return None
+
+
+def _runtime_port(source: Any) -> int | None:
+    if isinstance(source, HttpTtsRequestSource):
+        return source.port
+    return None
+
+
+def _runtime_health_url(source: Any) -> str | None:
+    if isinstance(source, HttpTtsRequestSource):
+        return source.health_endpoint
+    return None
+
+
+def _runtime_shutdown_url(source: Any) -> str | None:
+    if isinstance(source, HttpTtsRequestSource):
+        return source.shutdown_endpoint
+    return None
+
+
+def _shutdown_exit_code(shutdown: ShutdownController) -> int:
+    if shutdown.reason in {"keyboard_interrupt", "signal:2"}:
+        return 130
+    if shutdown.reason and shutdown.reason.startswith("signal:"):
+        try:
+            return 128 + int(shutdown.reason.partition(":")[2])
+        except ValueError:
+            return 0
+    return 0
 
 
 def _build_synthesizer(args: argparse.Namespace):
@@ -258,7 +354,10 @@ def _print_startup(args: argparse.Namespace, source: Any, source_target: str, ef
     print(f"  source: {args.source}", flush=True)
     print(f"  watching: {source_target}", flush=True)
     if isinstance(source, HttpTtsRequestSource):
+        print(f"  health_endpoint: {source.health_endpoint}", flush=True)
         print(f"  chunk_endpoint: {source.chunk_endpoint}", flush=True)
+        print(f"  volume_endpoint: {source.volume_endpoint}", flush=True)
+        print(f"  shutdown_endpoint: {source.shutdown_endpoint}", flush=True)
     print(f"  output_status_dir: {args.output_status_dir}", flush=True)
     print(f"  engine: {args.engine}", flush=True)
     print(f"  player: {effective_player}", flush=True)

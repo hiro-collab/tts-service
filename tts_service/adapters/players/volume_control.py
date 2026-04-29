@@ -44,6 +44,16 @@ class VolumeControlledPlayer:
             with suppress(OSError):
                 adjusted_path.unlink()
 
+    def stop(self) -> None:
+        stop = getattr(self.inner, "stop", None)
+        if callable(stop):
+            stop()
+
+    def close(self) -> None:
+        close = getattr(self.inner, "close", None)
+        if callable(close):
+            close()
+
 
 def scale_wav_volume(input_path: Path, output_path: Path, volume: float) -> None:
     if not 0.0 <= volume <= 1.0:

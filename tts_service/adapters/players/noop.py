@@ -8,3 +8,6 @@ class NoopPlayer:
 
     def play(self, audio: AudioArtifact) -> None:
         return None
+
+    def stop(self) -> None:
+        return None

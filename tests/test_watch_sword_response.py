@@ -3,8 +3,11 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 import io
 import json
+import threading
+import time
 import unittest
 from pathlib import Path
+from urllib import request as urlrequest
 
 from tts_service.adapters.status.json_status_store import JsonStatusStore
 from tts_service.adapters.volume.json_volume_store import JsonVolumeProvider, write_app_volume
@@ -147,6 +150,80 @@ class WatchSwordResponseTests(unittest.TestCase):
             self.assertEqual(latest["app_volume_file"], str(volume_file))
             self.assertEqual(latest["volume"], 100)
             self.assertEqual(latest["rate"], 0)
+
+    def test_http_source_writes_runtime_status_and_shutdown_stops_watcher(self) -> None:
+        with workspace_temp_dir() as temp_dir:
+            root = Path(temp_dir)
+            output_dir = root / "tts"
+            runtime_status_file = root / "runtime_status.json"
+            exit_codes: list[int] = []
+
+            def run_watcher() -> None:
+                with redirect_stdout(io.StringIO()):
+                    exit_codes.append(
+                        main(
+                            [
+                                "--source",
+                                "http",
+                                "--http-port",
+                                "0",
+                                "--output-status-dir",
+                                str(output_dir),
+                                "--runtime-status-file",
+                                str(runtime_status_file),
+                                "--engine",
+                                "noop",
+                                "--player",
+                                "noop",
+                            ]
+                        )
+                    )
+
+            thread = threading.Thread(target=run_watcher)
+            thread.start()
+            runtime = _wait_for_runtime_status(runtime_status_file, state="running")
+            health = _get_json(runtime["health_url"])
+            shutdown = _post_json(runtime["shutdown_url"], {})
+            thread.join(timeout=3.0)
+
+            stopped = json.loads(runtime_status_file.read_text(encoding="utf-8"))
+            latest = json.loads((output_dir / "latest_tts_state.json").read_text(encoding="utf-8"))
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(exit_codes, [0])
+            self.assertEqual(runtime["module"], "tts_service")
+            self.assertEqual(runtime["port"], health["port"])
+            self.assertEqual(health["module"], "tts_service")
+            self.assertEqual(health["phase"], "idle")
+            self.assertTrue(shutdown["ok"])
+            self.assertEqual(stopped["state"], "stopped")
+            self.assertEqual(latest["service"], "stopped")
+
+def _wait_for_runtime_status(path: Path, state: str) -> dict:
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        if path.exists():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if payload.get("state") == state:
+                return payload
+        time.sleep(0.05)
+    raise AssertionError(f"runtime status file was not written with state={state}")
+
+
+def _get_json(url: str) -> dict:
+    with urlrequest.urlopen(url, timeout=2.0) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _post_json(url: str, payload: dict) -> dict:
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urlrequest.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    with urlrequest.urlopen(request, timeout=2.0) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 if __name__ == "__main__":

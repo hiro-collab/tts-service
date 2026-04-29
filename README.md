@@ -207,8 +207,11 @@ python -m tts_service.apps.watch_sword_response `
   --source http `
   --http-host 127.0.0.1 `
   --http-port 8765 `
-  --output-status-dir .cache\tts_service
+  --output-status-dir .cache\tts_service `
+  --runtime-status-file .cache\tts_service\runtime_status.json
 ```
+
+HTTP source は指定 port が使用中の場合、自動で別 port へ退避せずにエラー終了します。統合側が期待する port と実際の listen port がずれないようにするためです。
 
 全文を渡す場合:
 
@@ -236,7 +239,23 @@ Invoke-RestMethod `
   -Body '{"delta":"です","message_id":"msg-1","turn_id":"turn-1","final":true}'
 ```
 
-HTTP source はローカル実行前提です。認証や通信路保護が必要な環境では、前段 proxy などで保護してください。
+HTTP source はローカル実行前提です。`--http-host 0.0.0.0` など loopback 以外に bind する場合は `--shutdown-token` が必須です。`POST /shutdown` では `Authorization: Bearer ...` または `X-Sword-Agent-Token` で token を渡します。
+
+ヘルスチェック:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8765/health
+```
+
+`/health` は `ok`、`module`、`pid`、`uptime_s`、`host`、`port` に加えて、`volume_endpoint`、`queued`、`phase` を返します。
+
+協調停止:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8765/shutdown
+```
+
+`POST /shutdown` は即時 kill ではなく、HTTP server loop を止め、watcher 側で再生停止、source close、status 更新を行って終了します。停止後は `latest_tts_state.json` に `service: "stopped"` を書きます。
 
 HTTP source 起動中は app volume もHTTPで取得・変更できます。
 
@@ -251,6 +270,39 @@ Invoke-RestMethod `
 ```
 
 `POST /api/volume` は `app_volume.json` を更新します。ファイルを直接書き換えた場合と同じく、watcher は次のループで status に反映します。
+
+## Runtime Status File
+
+長時間起動する watcher は、`--runtime-status-file` を指定すると PID と停止方法を書き出します。
+
+```powershell
+python -m tts_service.apps.watch_sword_response `
+  --source http `
+  --http-port 8765 `
+  --output-status-dir .cache\tts_service `
+  --runtime-status-file .cache\tts_service\runtime_status.json
+```
+
+例:
+
+```json
+{
+  "module": "tts_service",
+  "state": "running",
+  "pid": 12345,
+  "parent_pid": 12000,
+  "started_at": "2026-04-29T00:00:00+00:00",
+  "stopped_at": null,
+  "host": "127.0.0.1",
+  "port": 8765,
+  "health_url": "http://127.0.0.1:8765/health",
+  "shutdown_url": "http://127.0.0.1:8765/shutdown",
+  "shutdown_command": null,
+  "command_line": ["python", "-m", "tts_service.apps.watch_sword_response", "..."]
+}
+```
+
+正常終了、Ctrl+C、`POST /shutdown` のいずれでも runtime status file は削除せず、`state: "stopped"` と `stopped_at` に更新します。`--shutdown-token` の値は `command_line` 上で `<redacted>` に置き換えます。
 
 ## 重複防止
 

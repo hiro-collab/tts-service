@@ -4,6 +4,7 @@ from contextlib import suppress
 import json
 import shutil
 import subprocess
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -104,6 +105,8 @@ class WindowsSapiSynthesizer:
         self.rate = rate
         self.volume = volume
         self.powershell_executable = powershell_executable or _find_powershell()
+        self._process_lock = threading.Lock()
+        self._process: subprocess.Popen[bytes] | None = None
 
     def synthesize(self, request: TtsRequest) -> AudioArtifact:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -115,28 +118,38 @@ class WindowsSapiSynthesizer:
         try:
             text_path.write_text(request.text, encoding="utf-8")
             script_path.write_text(POWERSHELL_SCRIPT, encoding="utf-8")
-            completed = subprocess.run(
-                [
-                    self.powershell_executable,
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    str(script_path),
-                    "-TextPath",
-                    str(text_path),
-                    "-OutPath",
-                    str(wav_path),
-                    "-VoiceName",
-                    self.voice_name,
-                    "-Rate",
-                    str(self.rate),
-                    "-Volume",
-                    str(self.volume),
-                ],
-                capture_output=True,
-                check=False,
+            command = [
+                self.powershell_executable,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script_path),
+                "-TextPath",
+                str(text_path),
+                "-OutPath",
+                str(wav_path),
+                "-VoiceName",
+                self.voice_name,
+                "-Rate",
+                str(self.rate),
+                "-Volume",
+                str(self.volume),
+            ]
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
+            with self._process_lock:
+                self._process = process
+            try:
+                stdout, stderr = process.communicate()
+            finally:
+                with self._process_lock:
+                    if self._process is process:
+                        self._process = None
+            completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
             if completed.returncode != 0:
                 detail = _decode_process_output(completed.stderr or completed.stdout).strip()
                 with suppress(OSError):
@@ -159,6 +172,13 @@ class WindowsSapiSynthesizer:
             )
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
+
+    def stop(self) -> None:
+        with self._process_lock:
+            process = self._process
+        if process is not None and process.poll() is None:
+            with suppress(OSError):
+                process.terminate()
 
 
 def _find_powershell() -> str:

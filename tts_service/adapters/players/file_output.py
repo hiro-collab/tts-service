@@ -17,3 +17,6 @@ class FileOutputPlayer:
         if audio.path.resolve() != target.resolve():
             shutil.copy2(audio.path, target)
         self.last_output_path = target
+
+    def stop(self) -> None:
+        return None

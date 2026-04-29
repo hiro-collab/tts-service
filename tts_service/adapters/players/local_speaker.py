@@ -13,3 +13,11 @@ class LocalSpeakerPlayer:
         import winsound
 
         winsound.PlaySound(str(audio.path), winsound.SND_FILENAME)
+
+    def stop(self) -> None:
+        if platform.system() != "Windows":
+            return
+
+        import winsound
+
+        winsound.PlaySound(None, 0)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 from pathlib import Path
+import threading
 from typing import Any, Mapping
 
 from tts_service.core.dedupe import DedupeStore
@@ -27,11 +28,27 @@ class TtsPipeline:
         self.dedupe_store = dedupe_store
         self.cleanup_transient_audio = cleanup_transient_audio
         self.state_context = dict(state_context or {})
+        self._phase = TtsPhase.IDLE
+        self._phase_lock = threading.Lock()
+
+    @property
+    def phase(self) -> TtsPhase:
+        with self._phase_lock:
+            return self._phase
+
+    def stop(self) -> None:
+        _call_optional(self.player, "stop")
+        _call_optional(self.synthesizer, "stop")
+
+    def close(self) -> None:
+        _call_optional(self.player, "close")
+        _call_optional(self.synthesizer, "close")
 
     def speak(self, request: TtsRequest) -> TtsResult:
         started_at = utc_now_iso()
         self._write_event(self._request_event("tts_request", request))
         if self.dedupe_store and self.dedupe_store.has_seen(request):
+            self._set_phase(TtsPhase.SKIPPED)
             self._write_state(self._request_state(TtsPhase.SKIPPED, request))
             return TtsResult(
                 request=request,
@@ -46,6 +63,7 @@ class TtsPipeline:
             if not request.text.strip():
                 raise ValueError("TTS request text is empty")
 
+            self._set_phase(TtsPhase.SPEAKING)
             self._write_state(self._request_state(TtsPhase.SPEAKING, request))
             audio = self.synthesizer.synthesize(request)
             audio_path = audio.path
@@ -66,6 +84,7 @@ class TtsPipeline:
             if self.dedupe_store:
                 self.dedupe_store.mark_seen(request)
             completed_at = utc_now_iso()
+            self._set_phase(TtsPhase.COMPLETED)
             self._write_state(self._request_state(TtsPhase.COMPLETED, request))
             return TtsResult(
                 request=request,
@@ -77,6 +96,7 @@ class TtsPipeline:
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             completed_at = utc_now_iso()
+            self._set_phase(TtsPhase.ERROR)
             self._write_event(self._request_event("tts_error", request, error=error))
             self._write_state(self._request_state(TtsPhase.ERROR, request, error=error))
             return TtsResult(
@@ -96,6 +116,10 @@ class TtsPipeline:
             ):
                 with suppress(OSError):
                     audio_path.unlink()
+
+    def _set_phase(self, phase: TtsPhase) -> None:
+        with self._phase_lock:
+            self._phase = phase
 
     def _write_state(self, state: TtsState) -> None:
         if self.status_sink is None:
@@ -171,3 +195,9 @@ def _int_or_none(value: Any) -> int | None:
     if isinstance(value, int):
         return value
     return None
+
+
+def _call_optional(target: Any, method_name: str) -> None:
+    method = getattr(target, method_name, None)
+    if callable(method):
+        method()
