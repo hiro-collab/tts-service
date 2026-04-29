@@ -19,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--text", help="Text to speak. Reads stdin when omitted.")
     parser.add_argument("--message-id", help="Optional message id for status and dedupe identity.")
     parser.add_argument("--conversation-id", help="Optional conversation id for status and dedupe identity.")
+    parser.add_argument("--turn-id", help="Optional turn id for latency events and status.")
     parser.add_argument("--output-status-dir", type=Path, default=Path(".cache/tts_service"))
     parser.add_argument("--engine", choices=("windows-sapi", "noop"), default="windows-sapi")
     parser.add_argument("--player", choices=("speaker", "file", "noop"), default="speaker")
@@ -37,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         message_id=args.message_id,
         conversation_id=args.conversation_id,
         source="cli",
+        metadata={"turn_id": args.turn_id} if args.turn_id else {},
     )
 
     status_store = JsonStatusStore(args.output_status_dir)

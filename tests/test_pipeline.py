@@ -5,7 +5,7 @@ from pathlib import Path
 
 from tts_service.core.dedupe import InMemoryDedupeStore
 from tts_service.core.pipeline import TtsPipeline
-from tts_service.core.types import AudioArtifact, TtsPhase, TtsRequest, TtsState
+from tts_service.core.types import AudioArtifact, TtsEvent, TtsPhase, TtsRequest, TtsState
 from tests.helpers import workspace_temp_dir
 
 
@@ -31,12 +31,13 @@ class FakePlayer:
 class FakeStatusSink:
     def __init__(self) -> None:
         self.states: list[TtsState] = []
+        self.events: list[TtsState | TtsEvent] = []
 
     def write_state(self, state: TtsState) -> None:
         self.states.append(state)
 
-    def write_event(self, state: TtsState) -> None:
-        pass
+    def write_event(self, event: TtsState | TtsEvent) -> None:
+        self.events.append(event)
 
 
 class PipelineTests(unittest.TestCase):
@@ -55,6 +56,10 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(result.phase, TtsPhase.COMPLETED)
             self.assertTrue(dedupe.has_seen(request))
             self.assertEqual([state.phase for state in status.states], [TtsPhase.SPEAKING, TtsPhase.COMPLETED])
+            self.assertEqual(
+                [event.event for event in status.events if isinstance(event, TtsEvent)],
+                ["tts_request", "tts_first_audio", "play_start", "play_done"],
+            )
             self.assertEqual(synth.calls, 1)
             self.assertEqual(player.calls, 1)
 
@@ -84,6 +89,10 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(status.states[-1].engine, "noop")
             self.assertEqual(status.states[-1].player, "noop")
             self.assertEqual(status.states[-1].turn_id, "turn-1")
+            event = next(event for event in status.events if isinstance(event, TtsEvent))
+            self.assertEqual(event.turn_id, "turn-1")
+            self.assertEqual(event.metadata["service"], "running")
+            self.assertIsInstance(event.monotonic_time, float)
 
     def test_duplicate_request_is_skipped(self) -> None:
         with workspace_temp_dir() as temp_dir:

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from tts_service.core.dedupe import DedupeStore
-from tts_service.core.types import TtsPhase, TtsRequest, TtsResult, TtsState, utc_now_iso
+from tts_service.core.types import TtsEvent, TtsPhase, TtsRequest, TtsResult, TtsState, utc_now_iso
 from tts_service.ports.player import Player
 from tts_service.ports.status_sink import StatusSink
 from tts_service.ports.synthesizer import Synthesizer
@@ -30,6 +30,7 @@ class TtsPipeline:
 
     def speak(self, request: TtsRequest) -> TtsResult:
         started_at = utc_now_iso()
+        self._write_event(self._request_event("tts_request", request))
         if self.dedupe_store and self.dedupe_store.has_seen(request):
             self._write_state(self._request_state(TtsPhase.SKIPPED, request))
             return TtsResult(
@@ -48,7 +49,20 @@ class TtsPipeline:
             self._write_state(self._request_state(TtsPhase.SPEAKING, request))
             audio = self.synthesizer.synthesize(request)
             audio_path = audio.path
+            self._write_event(
+                self._request_event(
+                    "tts_first_audio",
+                    request,
+                    metadata={
+                        "audio_mime_type": audio.mime_type,
+                        "audio_transient": audio.transient,
+                        "audio_engine": _string_or_none(audio.metadata.get("engine")),
+                    },
+                )
+            )
+            self._write_event(self._request_event("play_start", request))
             self.player.play(audio)
+            self._write_event(self._request_event("play_done", request))
             if self.dedupe_store:
                 self.dedupe_store.mark_seen(request)
             completed_at = utc_now_iso()
@@ -63,6 +77,7 @@ class TtsPipeline:
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             completed_at = utc_now_iso()
+            self._write_event(self._request_event("tts_error", request, error=error))
             self._write_state(self._request_state(TtsPhase.ERROR, request, error=error))
             return TtsResult(
                 request=request,
@@ -88,6 +103,11 @@ class TtsPipeline:
         self.status_sink.write_state(state)
         self.status_sink.write_event(state)
 
+    def _write_event(self, event: TtsEvent) -> None:
+        if self.status_sink is None:
+            return
+        self.status_sink.write_event(event)
+
     def _request_state(
         self,
         phase: TtsPhase,
@@ -95,6 +115,23 @@ class TtsPipeline:
         error: str | None = None,
     ) -> TtsState:
         return TtsState.from_request(phase, request, error=error).with_context(
+            service=_string_or_none(self.state_context.get("service")),
+            watching=_string_or_none(self.state_context.get("watching")),
+            engine=_string_or_none(self.state_context.get("engine")),
+            player=_string_or_none(self.state_context.get("player")),
+            voice_name=_string_or_none(self.state_context.get("voice_name")),
+            poll_interval=_float_or_none(self.state_context.get("poll_interval")),
+        )
+
+    def _request_event(
+        self,
+        event: str,
+        request: TtsRequest,
+        *,
+        error: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> TtsEvent:
+        return TtsEvent.from_request(event, request, error=error, metadata=metadata).with_context(
             service=_string_or_none(self.state_context.get("service")),
             watching=_string_or_none(self.state_context.get("watching")),
             engine=_string_or_none(self.state_context.get("engine")),

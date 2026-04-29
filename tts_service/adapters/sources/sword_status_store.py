@@ -86,7 +86,7 @@ class SwordStatusStoreSource:
         return request
 
 
-def request_from_sword_payload(payload: Any) -> TtsRequest | None:
+def request_from_sword_payload(payload: Any, source: str = "sword_status_store") -> TtsRequest | None:
     if isinstance(payload, dict) and payload.get("skipped") is True:
         return None
 
@@ -102,7 +102,7 @@ def request_from_sword_payload(payload: Any) -> TtsRequest | None:
         text=text,
         message_id=message_id,
         conversation_id=conversation_id,
-        source="sword_status_store",
+        source=source,
         metadata=metadata,
     )
 

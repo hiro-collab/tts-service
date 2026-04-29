@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tts_service.core.types import TtsState
+from tts_service.core.types import TtsEvent, TtsState
 
 
 class JsonStatusStore:
@@ -25,8 +25,8 @@ class JsonStatusStore:
             file.write("\n")
         tmp_path.replace(self.latest_path)
 
-    def write_event(self, state: TtsState) -> None:
+    def write_event(self, event: TtsState | TtsEvent) -> None:
         self.output_status_dir.mkdir(parents=True, exist_ok=True)
         with self.events_path.open("a", encoding="utf-8") as file:
-            json.dump(state.to_public_dict(), file, ensure_ascii=False)
+            json.dump(event.to_public_dict(), file, ensure_ascii=False)
             file.write("\n")

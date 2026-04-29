@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from tts_service.adapters.status.json_status_store import JsonStatusStore
-from tts_service.core.types import TtsPhase, TtsRequest, TtsState
+from tts_service.core.types import TtsEvent, TtsPhase, TtsRequest, TtsState
 from tests.helpers import workspace_temp_dir
 
 
@@ -30,9 +30,11 @@ class JsonStatusStoreTests(unittest.TestCase):
             )
             store.write_state(state)
             store.write_event(TtsState.from_request(TtsPhase.SPEAKING, request))
+            store.write_event(TtsEvent.from_request("tts_request", request))
 
             latest = json.loads((Path(temp_dir) / "latest_tts_state.json").read_text(encoding="utf-8"))
-            events = (Path(temp_dir) / "events.jsonl").read_text(encoding="utf-8")
+            event_lines = (Path(temp_dir) / "events.jsonl").read_text(encoding="utf-8").splitlines()
+            events = "\n".join(event_lines)
             self.assertNotIn("sensitive answer", json.dumps(latest, ensure_ascii=False))
             self.assertNotIn("sensitive answer", events)
             self.assertEqual(latest["phase"], "speaking")
@@ -40,6 +42,11 @@ class JsonStatusStoreTests(unittest.TestCase):
             self.assertEqual(latest["turn_id"], "turn-1")
             self.assertEqual(latest["engine"], "noop")
             self.assertEqual(latest["player"], "noop")
+            latency_event = json.loads(event_lines[-1])
+            self.assertEqual(latency_event["type"], "tts_event")
+            self.assertEqual(latency_event["event"], "tts_request")
+            self.assertEqual(latency_event["turn_id"], "turn-1")
+            self.assertIsInstance(latency_event["monotonic_time"], float)
 
 
 if __name__ == "__main__":

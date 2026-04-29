@@ -5,11 +5,16 @@ from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 from pathlib import Path
+import time
 from typing import Any, Mapping
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def perf_counter_seconds() -> float:
+    return time.perf_counter()
 
 
 def normalized_text(text: str) -> str:
@@ -74,6 +79,94 @@ class TtsResult:
     @property
     def ok(self) -> bool:
         return self.phase in {TtsPhase.COMPLETED, TtsPhase.SKIPPED}
+
+
+@dataclass(frozen=True)
+class TtsEvent:
+    event: str
+    wall_time: str = field(default_factory=utc_now_iso)
+    monotonic_time: float = field(default_factory=perf_counter_seconds)
+    request_id: str | None = None
+    message_id: str | None = None
+    conversation_id: str | None = None
+    turn_id: str | None = None
+    source: str | None = None
+    text_hash: str | None = None
+    error: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_request(
+        cls,
+        event: str,
+        request: TtsRequest,
+        *,
+        error: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> "TtsEvent":
+        return cls(
+            event=event,
+            request_id=request.request_id,
+            message_id=request.message_id,
+            conversation_id=request.conversation_id,
+            turn_id=_string_metadata(request.metadata, "turn_id"),
+            source=request.source,
+            text_hash=request.text_hash,
+            error=error,
+            metadata=dict(metadata or {}),
+        )
+
+    def with_context(
+        self,
+        service: str | None = None,
+        watching: str | None = None,
+        engine: str | None = None,
+        player: str | None = None,
+        voice_name: str | None = None,
+        poll_interval: float | None = None,
+    ) -> "TtsEvent":
+        metadata = dict(self.metadata)
+        for key, value in {
+            "service": service,
+            "watching": watching,
+            "engine": engine,
+            "player": player,
+            "voice_name": voice_name,
+            "poll_interval": poll_interval,
+        }.items():
+            if value is not None:
+                metadata[key] = value
+        return TtsEvent(
+            event=self.event,
+            wall_time=self.wall_time,
+            monotonic_time=self.monotonic_time,
+            request_id=self.request_id,
+            message_id=self.message_id,
+            conversation_id=self.conversation_id,
+            turn_id=self.turn_id,
+            source=self.source,
+            text_hash=self.text_hash,
+            error=self.error,
+            metadata=metadata,
+        )
+
+    def to_public_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "type": "tts_event",
+            "event": self.event,
+            "wall_time": self.wall_time,
+            "monotonic_time": self.monotonic_time,
+            "perf_counter": self.monotonic_time,
+            "request_id": self.request_id,
+            "message_id": self.message_id,
+            "conversation_id": self.conversation_id,
+            "turn_id": self.turn_id,
+            "source": self.source,
+            "text_hash": self.text_hash,
+            "error": self.error,
+        }
+        payload.update({key: value for key, value in self.metadata.items() if value is not None})
+        return payload
 
 
 @dataclass(frozen=True)
