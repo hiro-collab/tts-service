@@ -20,3 +20,6 @@ tts-set-volume = "tts_service.apps.set_volume:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["tts_service*"]
+
+[tool.uv]
+cache-dir = ".uv-cache"
