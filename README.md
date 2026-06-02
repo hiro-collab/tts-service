@@ -12,16 +12,20 @@
 
 TTS service は Dify 応答を生成しません。avatar 表示も担当しません。
 
-## Install
+## 初期セットアップ
 
 ```powershell
 cd <workspace>\tts-service
 uv sync
+if (-not (Test-Path .env)) {
+  Copy-Item .env.example .env
+}
 ```
 
-Windows SAPI を使う標準構成では追加 API key は不要です。
+Windows SAPI を使う標準構成では追加 API key は不要です。`.env` は process manager で固定値を読みたい
+場合のローカル設定ファイルです。実 token や将来 adapter 用の API key はコミットしません。
 
-## Speak Once
+## 単発確認
 
 ```powershell
 $env:PYTHONPATH = "src"
@@ -34,7 +38,7 @@ uv run python -m tts_service.apps.speak "こんにちは"
 uv run python -m tts_service.apps.speak "こんにちは" --voice-name "Microsoft Haruka Desktop" --rate 0 --volume 100
 ```
 
-## HTTP Source
+## 通常起動: HTTP Source
 
 `sword-voice-agent` の標準統合では HTTP source を使います。
 
